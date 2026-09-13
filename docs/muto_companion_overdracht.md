@@ -323,3 +323,17 @@ Geïmplementeerd: `robot.health`, `robot.state`, `robot.move`, `robot.stop`, `ro
 - Geen 50Hz-controlrate aannemen zonder de 27ms-bulk-read-limiet te respecteren.
 - Geen BLE-stack bouwen voor discovery — UDP volstaat voor het LAN-scenario.
 - Niet wachten op Yahboom voor firmware-updates — die komen niet.
+
+---
+
+## 6. Update 13 sep 2026 (later in de dag)
+
+**`app_muto.py`'s autostart is nu permanent uitgeschakeld** (sluit het "nog open"-punt uit sectie hierboven, 11 sep 2026 -- `~/.config/autostart/app.desktop` hernoemd naar `app.desktop.disabled`, herstart-bestendig geverifieerd met een echte reboot). Reden dat dit nu wel kon, in tegenstelling tot 11 sep: `mutod` is inmiddels een volledig uitgebouwd en live-geteste besturingspad (Fase 3-7), dus de oorspronkelijke blokkerende reden ("geen vervangende manier om de robot te besturen") is niet meer van toepassing.
+
+**Bekende, nog niet opgeloste bijwerking:** `yahboom_oled.py` (OLED-batterijschermpje) leest `/tmp/battery_pct`/`/tmp/battery_volt`, die alleen `app_muto.py` bijhield. Nu die permanent uit staat, toont het schermpje ofwel voor altijd verouderde data, of `yahboom_oled.py` valt terug op een eigen directe `/dev/myserial`-verbinding die met `mutod` kan botsen. Gebruiker is hierover geinformeerd, nog geen keuze gemaakt of `yahboom_oled.py`'s autostart ook uitgezet moet worden.
+
+**Camera-diepte-interface (Orbbec Astra, `2bc5:060f`): root cause herbevestigd, geen nieuwe info.** Zelfde patroon als eerder (zie Fase 7/camera-sectie): bij twijfelachtige fysieke verbinding (hub i.p.v. directe Pi-poort) enumereert alleen de kleur-interface (`2bc5:050f`), de diepte-interface komt helemaal niet in `dmesg` voor. Bevestigd met een schone reboot (geen verandering) en pas opgelost na een echte fysieke kabel-reconnect (bevestigd via een nieuwe `dmesg`-regel voor `2bc5:060f`). Blijf dit checken als eerste stap als de camera ooit weer geen diepte geeft.
+
+**Audio/TTS: volledig opgelost en uitgebreid.** De USB-speaker bleek nooit kapotte hardware — een udev-regel (`99-yahboom-audio.rules`) blokkeerde de ALSA-driver, verwijderd en bevestigd na reboot. TTS vervolgens toegevoegd aan `yolo_snapshot_sender.py` (`--speak`-flag): eerst espeak-ng geprobeerd (Nederlands en Engels, ook met lagere spreeksnelheid) — user-oordeel steeds "slecht"/"matig" verstaanbaar. Vervangen door **Piper** (lokale neurale TTS, `en_US-amy-medium`-stem, via een pip-venv omdat dit OS `pip install` systeembreed blokkeert) — user-bevestigd "veel beter!!". espeak-ng volledig verwijderd. Geinspireerd door onderzoek naar Reachy's (Pollen Robotics) eigen TTS-aanpak (cloud-gebaseerd, Deepgram/Grok Voice) — Piper is het lokale/offline equivalent zonder cloud-afhankelijkheid.
+
+**Mijlpaal, zelfde dag:** eerste succesvolle autonome deur-doorgang met `wander_executor.py` (corridor-veiligheid, watchdog-fix, doel-volg-prioriteit, corridor-centreren, kleurgebaseerde detectie i.p.v. helderheid-gebaseerd — zie de code-comments in `wander_executor.py`/`behavior.py` voor details per fix).

@@ -13,6 +13,7 @@ import argparse
 import io
 import json
 import socket
+import subprocess
 import time
 
 import requests
@@ -26,7 +27,17 @@ from PIL import Image as PILImage
 JETSON_URL = "http://192.168.68.86:8600/detect"
 SNAPSHOT_INTERVAL_S = 5.0
 MUTOD_HOST, MUTOD_PORT = "127.0.0.1", 8420
-BEEP_TIMEOUT = 3  # 300ms -- kort "ik zag iets nieuws"-piepje, geen woorden (USB-speaker nog kapot, zie muto_buzzer_2026-09-13)
+BEEP_TIMEOUT = 3  # 300ms -- kort "ik zag iets nieuws"-piepje
+# 13 sep 2026: espeak-ng (formant-synthese) was slecht verstaanbaar, ook in het
+# Engels en met een lagere spreeksnelheid -- vervangen door Piper (neurale TTS,
+# lokaal/offline, zoals Reachy's cloud-TTS maar zonder de cloud-afhankelijkheid,
+# zie muto_reachy_tts_research_2026-09-13-memory), user-confirmed "veel beter!!".
+PIPER_BIN = "/root/piper_venv/bin/piper"
+PIPER_MODEL = "/root/piper_voices/en_US-amy-medium.onnx"
+PIPER_SAMPLE_RATE = 22050
+# USB-speaker kaartnummer kan per boot wisselen (zie muto_audio_module_fix_2026-09-13-memory)
+# -- vandaar hier als losse, makkelijk te updaten constante i.p.v. hardcoded verderop.
+TTS_ALSA_DEVICE = "plughw:2,0"
 
 
 class MutodBuzzer:
@@ -48,15 +59,49 @@ class MutodBuzzer:
             self._logger.warn(f"kon niet piepen (mutod niet bereikbaar?): {exc}")
 
 
+class Tts:
+    """13 sep 2026: de USB-speaker bleek geen kapotte chip, een udev-regel
+    blokkeerde de ALSA-driver (zie muto_audio_module_fix_2026-09-13-memory) --
+    nu gefixed, dus echte spraak i.p.v. alleen een piepje is een reele optie.
+    Piper (lokale neurale TTS, zie /root/piper_venv) i.p.v. espeak-ng --
+    espeak-ng's formant-synthese was zelfs in het Engels slecht verstaanbaar,
+    Piper is user-confirmed "veel beter!!". Piper -> aplay via een pipe,
+    fire-and-forget (niet gewacht op het resultaat) zodat een trage/falende
+    TTS-aanroep de detectie-cyclus (die elke SNAPSHOT_INTERVAL_S al een
+    netwerk-call naar de Jetson doet) nooit blokkeert."""
+
+    def __init__(self, logger):
+        self._logger = logger
+
+    def say(self, text: str):
+        try:
+            piper = subprocess.Popen(
+                [PIPER_BIN, "--model", PIPER_MODEL, "--output-raw"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+            )
+            subprocess.Popen(
+                ["aplay", "-r", str(PIPER_SAMPLE_RATE), "-f", "S16_LE", "-t", "raw", "-D", TTS_ALSA_DEVICE],
+                stdin=piper.stdout,
+            )
+            piper.stdout.close()
+            piper.stdin.write(text.encode())
+            piper.stdin.close()
+        except OSError as exc:
+            self._logger.warn(f"kon niet spreken (piper/aplay niet gevonden?): {exc}")
+
+
 class YoloSnapshotSender(Node):
-    def __init__(self, interval_s: float, beep_enabled: bool = False):
+    def __init__(self, interval_s: float, beep_enabled: bool = False, speak_enabled: bool = False):
         super().__init__("yolo_snapshot_sender")
         self.bridge = CvBridge()
         self.interval_s = interval_s
         self.beep_enabled = beep_enabled
+        self.speak_enabled = speak_enabled
         self.latest_color = None
         self.latest_depth = None
         self.buzzer = MutodBuzzer(self.get_logger())
+        self.tts = Tts(self.get_logger())
         self.previous_labels = set()
 
         self.create_subscription(Image, "/camera/color/image_raw", self._color_cb, qos_profile_sensor_data)
@@ -112,8 +157,17 @@ class YoloSnapshotSender(Node):
             if self.beep_enabled:
                 self.get_logger().info(f"nieuw gezien t.o.v. vorige keer: {sorted(new_labels)} -- piep")
                 self.buzzer.beep()
-            else:
-                self.get_logger().info(f"nieuw gezien t.o.v. vorige keer: {sorted(new_labels)} (piepje uit)")
+            if self.speak_enabled:
+                label_to_distance = {d["label"]: d["distance_m"] for d in detections}
+                parts = []
+                for label in sorted(new_labels):
+                    dist = label_to_distance.get(label)
+                    parts.append(f"{label} at {dist} meters" if dist else label)
+                phrase = "I see " + " and ".join(parts)
+                self.get_logger().info(f"spreek: {phrase!r}")
+                self.tts.say(phrase)
+            if not self.beep_enabled and not self.speak_enabled:
+                self.get_logger().info(f"nieuw gezien t.o.v. vorige keer: {sorted(new_labels)} (audio uit)")
         self.previous_labels = current_labels
 
 
@@ -121,10 +175,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--interval", type=float, default=SNAPSHOT_INTERVAL_S)
     p.add_argument("--beep", action="store_true", help="piep via mutod's buzzer bij een nieuw gedetecteerd object (default: uit)")
+    p.add_argument("--speak", action="store_true", help="spreek (espeak-ng, nl) bij een nieuw gedetecteerd object (default: uit)")
     args = p.parse_args()
 
     rclpy.init()
-    node = YoloSnapshotSender(args.interval, beep_enabled=args.beep)
+    node = YoloSnapshotSender(args.interval, beep_enabled=args.beep, speak_enabled=args.speak)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

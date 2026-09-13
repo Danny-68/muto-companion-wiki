@@ -114,11 +114,16 @@ def choose_heading(candidate_headings_deg, clearance_by_heading_deg: dict,
                     current_x: float, current_y: float, current_yaw_deg: float,
                     grid: NoveltyGrid, step_m: float = 0.4, min_clear_m: float = 0.4):
     """Kiest de kandidaat-richting (graden, robot-relatief) met de beste
-    score = min(clearance, 2.0) * onbezocht-score van de cel die je zou
-    bereiken als je step_m in die richting zou lopen. Richtingen met minder
-    dan min_clear_m vrije ruimte vallen af. Geeft None terug als niets
-    voldoende vrij is (bv. omsingeld) -- de aanroeper moet dat als "sta stil,
-    geen veilige richting" behandelen, nooit als "0 graden kiezen"."""
+    score = min(clearance, 4.0) * (0.3 + 0.7 * onbezocht-score) van de cel
+    die je zou bereiken als je step_m in die richting zou lopen. Clearance
+    domineert bewust harder dan novelty (cap opgehoogd van 2.0m naar 4.0m,
+    en novelty heeft een vloer van 0.3 zodat een veel opener richting niet
+    wordt weggestemd puur omdat hij al vaker bezocht is) -- novelty blijft
+    alleen de tiebreaker tussen ongeveer even open richtingen. Richtingen
+    met minder dan min_clear_m vrije ruimte vallen af. Geeft None terug als
+    niets voldoende vrij is (bv. omsingeld) -- de aanroeper moet dat als
+    "sta stil, geen veilige richting" behandelen, nooit als "0 graden
+    kiezen"."""
     best_heading = None
     best_score = -1.0
     for heading_deg in candidate_headings_deg:
@@ -129,7 +134,8 @@ def choose_heading(candidate_headings_deg, clearance_by_heading_deg: dict,
         rad = math.radians(world_deg)
         next_x = current_x + step_m * math.cos(rad)
         next_y = current_y + step_m * math.sin(rad)
-        score = min(clearance, 2.0) * grid.novelty_score(next_x, next_y)
+        novelty = 0.3 + 0.7 * grid.novelty_score(next_x, next_y)
+        score = min(clearance, 4.0) * novelty
         if score > best_score:
             best_score = score
             best_heading = heading_deg

@@ -382,6 +382,16 @@ class Daemon:
                     )
                 return ipc_types.make_error(req_id, ipc_types.INTERNAL_ERROR, "onbereikbaar: lege KNOWN_SKILLS")
 
+            elif method == ipc_types.ROBOT_NOTIFY_INTERACTION:
+                # Sluit Fase 5's al bestaande, tot nu toe ongebruikte
+                # notify_interaction()-hook eindelijk aan op een echte
+                # detector (wander_executor.py's YOLO-check bij een
+                # veiligheidsstop, 13 sep 2026) -- roept zelf geen hal.*
+                # aan, verandert alleen behavior.py's interne staat zodat
+                # de volgende robot.state-mode WANDER verlaat.
+                self.behavior.notify_interaction()
+                return ipc_types.make_result(req_id, {"accepted": True})
+
             elif method == ipc_types.ROBOT_SUBSCRIBE:
                 # LET OP: start hier bewust GEEN achtergrondthread -- de
                 # aanroeper (Handler.handle()) start die pas na het schrijven

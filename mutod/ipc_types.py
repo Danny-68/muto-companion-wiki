@@ -26,9 +26,15 @@ ROBOT_STOP = "robot.stop"
 ROBOT_DO = "robot.do"              # {skill}
 ROBOT_SUBSCRIBE = "robot.subscribe"  # {hz?} -> SubscribeResult, dan robot.state-notificaties
 ROBOT_STATE = "robot.state"        # notificatie (server->client); ook one-shot beantwoordbaar
+# 13 sep 2026 (Fase 5-vervolg): externe detectoren (bv. wander_executor.py's
+# YOLO-check bij een veiligheidsstop) kunnen hiermee behavior.py's al
+# bestaande, tot nu toe nooit aangeroepen notify_interaction() triggeren --
+# geen nieuwe gedragslogica, alleen de al ontworpen hook eindelijk aansluiten.
+ROBOT_NOTIFY_INTERACTION = "robot.notify_interaction"  # geen params -> {"accepted": True}
 
 SUPPORTED_METHODS = {
     ROBOT_HEALTH, ROBOT_MOVE, ROBOT_STOP, ROBOT_DO, ROBOT_SUBSCRIBE, ROBOT_STATE,
+    ROBOT_NOTIFY_INTERACTION,
 }
 
 # JSON-RPC 2.0 standaard foutcodes (gebruikt zoals upstream ze gebruikt).

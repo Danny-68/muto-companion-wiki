@@ -1,16 +1,24 @@
 """lidar_obstacle.py -- LiDAR-clearance-per-richting, in BASE_LINK's eigen
 conventie (niet de rauwe laser-frame), voor Fase 5's wander-executor.
 
-De +180-correctie hieronder is niet aangenomen maar hergebruikt van een al
-tf2_echo-bevestigde meting elders in dit project: lidar_overlay.py's
-STATIC_YAW = math.pi voor de base_link->laser_scan_fix-transform (zie
-muto_front_convention.py/muto_localization_approach_pivot_2026-08-21-memory).
-Puur berekenlogica, geen rclpy-afhankelijkheid -- zelfde scheiding als
-depth_obstacle.py/behavior.py.
+TEKEN-FIX 13 sep 2026: de eerdere +180-correctie was overgenomen van
+lidar_overlay.py's STATIC_YAW voor de base_link->laser_scan_fix-transform --
+maar /scan_fixed (wat deze functie daadwerkelijk ontvangt) heeft frame_id
+"laser", een ANDER, apart kind-frame van base_link (bevestigd via
+`ros2 topic echo /scan_fixed --field header`), niet "laser_scan_fix" (dat op
+zijn beurt een kind van "laser" is, niet van base_link). Live opnieuw gemeten
+met het EXACTE, uit de topic-header bevestigde framenaam
+(`ros2 run tf2_ros tf2_echo base_link laser`, herhaald en consistent):
+rotatie is 0 graden, geen 180. Dit was precies de "nog niet betrouwbaar
+vastgestelde hoek-relatie" uit muto_wander_frontcheck_bug_2026-09-12 --
+destijds alleen gemitigeerd met een richting-onafhankelijke veiligheidsgrens,
+nooit echt gefixed. Live bevestigd: met deze fix koos de wander-executor
+voor het eerst daadwerkelijk een reeel vrije richting i.p.v. te blijven
+ronddraaien zonder vooruitgang (zie muto_lidar_heading_fix_2026-09-13-memory).
 """
 import math
 
-LASER_TO_BASE_LINK_YAW_DEG = 180.0  # tf2_echo-bevestigd, zie module-docstring
+LASER_TO_BASE_LINK_YAW_DEG = 0.0  # tf2_echo-bevestigd tegen het juiste "laser"-frame, zie module-docstring
 
 
 def estimate_clearance_by_heading(ranges, angle_min_rad: float, angle_increment_rad: float,

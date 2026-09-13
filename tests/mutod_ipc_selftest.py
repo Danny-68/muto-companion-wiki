@@ -105,6 +105,13 @@ resp = rpc(d, ipc_types.ROBOT_SUBSCRIBE, {"hz": 999})
 check("subscribe -> hz geklemd op max", resp["result"]["hz"] == ipc_types.SUBSCRIBE_MAX_HZ)
 check("subscribe -> accepted", resp["result"]["accepted"] is True)
 
+# -- robot.notify_interaction: sluit behavior.py's bestaande hook aan
+# (13 sep 2026, wander_executor.py's YOLO-persoon-check) --
+resp = rpc(d, ipc_types.ROBOT_NOTIFY_INTERACTION)
+check("notify_interaction -> accepted", resp["result"]["accepted"] is True)
+resp = rpc(d, ipc_types.ROBOT_STATE)
+check("notify_interaction -> mode wordt meteen interaction", resp["result"]["mode"] == "interaction")
+
 # -- onbekende methode --
 resp = rpc(d, "robot.headbutt")
 check("onbekende methode -> METHOD_NOT_FOUND", resp.get("error", {}).get("code") == ipc_types.METHOD_NOT_FOUND)

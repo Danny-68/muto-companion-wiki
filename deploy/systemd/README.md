@@ -17,4 +17,5 @@ Let op:
 - Start mutod of de listener daarna NIET ook met de hand: de seriele poort en de microfoon zijn exclusief (een tweede instantie stopt direct).
 - De paden gaan uit van gebruiker `pi`, `/home/pi` en de venv `/home/pi/whisper_venv`; pas ze aan als je een andere indeling hebt.
 - Logs: `sudo journalctl -u mutod -f` en `sudo journalctl -u muto-voice-listener -f`.
-- Een harde `kill -9` van elk van beide is getest (6 okt 2026): ze komen binnen ~6 s terug. Een echte herstart van het Pi is nog niet getest.
+- Een harde `kill -9` van elk van beide is getest (6 okt 2026): ze komen binnen ~6 s terug. Een echte herstart van het Pi is ook getest (6 okt 2026): beide eenheden kwamen vanzelf op.
+- De listener logt zonder `--debug` alleen gebeurtenissen en niet de herkende tekst (journald is permanent; spraak uit de kamer hoort daar niet in).

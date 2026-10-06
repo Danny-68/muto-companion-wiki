@@ -220,7 +220,10 @@ class Listener:
                 if self.debug:
                     log(f"  [debug] genegeerd ({len(pcm)/2/SAMPLE_RATE:.1f}s audio, {took:.1f}s whisper): {text!r}")
                 continue
-            log(f"[{len(pcm)/2/SAMPLE_RATE:.1f}s audio, {took:.1f}s whisper, backlog {self.segments.qsize()}] gehoord: {text!r}")
+            # Privacy (6 okt 2026): de herkende TEKST wordt alleen met --debug gelogd -- journald is hier permanent, en anders
+            # staat alles wat in de kamer gezegd wordt (of op de TV klinkt) als tekst op schijf. Zonder --debug alleen gebeurtenissen.
+            if self.debug:
+                log(f"[{len(pcm)/2/SAMPLE_RATE:.1f}s audio, {took:.1f}s whisper, backlog {self.segments.qsize()}] gehoord: {text!r}")
             self.decide(end_ts, text)
 
     def decide(self, end_ts: float, text: str):
@@ -238,7 +241,7 @@ class Listener:
 
         if armed and has_command:
             self.armed_until = 0.0  # 1 commando per keer "muto"
-            log(f"STOP-COMMANDO HERKEND ({text!r}) -> robot.stop")
+            log(f"STOP-COMMANDO HERKEND ({text!r}) -> robot.stop" if self.debug else "STOP-COMMANDO HERKEND -> robot.stop")
             ok, detail = call_robot_stop()
             log(f"robot.stop -> {detail}")
             if not ok:

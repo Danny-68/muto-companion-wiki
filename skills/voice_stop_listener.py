@@ -32,6 +32,7 @@ de microfoon gedempt (de echo clipt de mic op volle schaal, gemeten 6 okt
 import argparse
 import fcntl
 import json
+import os
 import queue
 import re
 import socket
@@ -42,6 +43,7 @@ import time
 import wave
 from collections import deque
 
+import numpy as np
 from pysilero_vad import SileroVoiceActivityDetector
 from pywhispercpp.model import Model
 
@@ -50,11 +52,22 @@ MIC_DEVICE = "plughw:CARD=Device,DEV=0"  # stabiele kaart-NAAM, niet -nummer, zi
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 512                      # 32 ms
 FRAME_BYTES = FRAME_SAMPLES * 2
-SEG_PATH = "/tmp/voice_stop_segment.wav"
 LOCK_PATH = "/tmp/voice_stop_listener.lock"
+DEBUG_SEG_DIR = "/tmp/voice_segments"      # alleen met --debug: elke uitspraak als wav bewaard om achteraf te kunnen beluisteren
 
-STOP_KEYWORDS = ("stop",)
-ATTENTION_WORD = "muto"
+ATTENTION_WORD = "muto"                  # alleen voor logregels; de echte check is ATTENTION_RE
+ATTENTION_RE = re.compile(r"\b(muto|mudo)\b")   # strikt: een losse fuzzy-match gaf 5-6/21 vals-alarmen ("mute", "mutual", "motor")
+STOP_RE = re.compile(r"\bstop\b")
+
+# --- Whisper-versnelling (gemeten 6 okt 2026 op 23 opnames: loop via speaker + echte stem) ---
+# Whisper.cpp verwerkt standaard ALTIJD een venster van 30 s (~5 s rekentijd, ook voor een uitspraak van 1 s).
+# Een gevuld venster van 15 s (stilte erachter + audio_ctx afgestemd) kost ~2,3 s en bleef 10/10 "muto", 11/11 "stop", 0/21 vals-alarm.
+# Kortere vensters (6/10 s) en tiny.en waren sneller maar onbetrouwbaar (muto 1-4/10, "stop" -> "suck"/"sot"); audio_ctx zonder
+# opvullen liet base.en hallucineren. De beginprompt tilt "muto" (geen Engels woord: Whisper hoort "mito"/"nuto") van 4/10 naar 10/10.
+WHISPER_MODEL = "base.en"
+WHISPER_PAD_S = 15.0
+WHISPER_PROMPT = "Muto. Muto, stop. Stop."
+WHISPER_MAX_TOKENS = 16                  # begrenst hallucinatielussen ("you know. you know. ...")
 ARM_WINDOW_S = 20.0                      # gemeten vanaf het EINDE van de "muto"-uitspraak, niet vanaf de transcriptie
 
 # --- stemdetectie: Silero VAD v6.2 (pysilero-vad, ggml-model zit in het pakket, ~0.2 ms per 32 ms-frame) ---
@@ -179,16 +192,29 @@ class Listener:
             proc.kill()
 
     # ---------------- transcriptie + beslissing (thread 2 = hoofdthread) ----------------
+    def transcribe(self, model, pcm: bytes) -> str:
+        x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        pad_s = max(WHISPER_PAD_S, len(x) / SAMPLE_RATE + 0.5)
+        x = np.concatenate([x, np.zeros(int(pad_s * SAMPLE_RATE) - len(x), dtype=np.float32)])
+        segs = model.transcribe(
+            x, no_context=True, single_segment=True, max_tokens=WHISPER_MAX_TOKENS,
+            initial_prompt=WHISPER_PROMPT, audio_ctx=min(1500, int(pad_s * 50)),
+        )
+        return " ".join(sg.text for sg in segs).strip().lower()
+
     def process_loop(self, model):
+        model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), audio_ctx=int(WHISPER_PAD_S * 50))  # warm-up, eerste aanroep is trager
         while True:
             end_ts, pcm = self.segments.get()
-            with wave.open(SEG_PATH, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(SAMPLE_RATE)
-                w.writeframes(pcm)
+            if self.debug:
+                os.makedirs(DEBUG_SEG_DIR, exist_ok=True)
+                with wave.open(f"{DEBUG_SEG_DIR}/seg_{time.strftime('%H%M%S')}_{int(end_ts*1000) % 100000}.wav", "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(SAMPLE_RATE)
+                    w.writeframes(pcm)
             t0 = time.monotonic()
-            text = " ".join(s.text for s in model.transcribe(SEG_PATH)).strip().lower()
+            text = self.transcribe(model, pcm)
             took = time.monotonic() - t0
             if not text or NON_SPEECH_TAG.match(text):
                 if self.debug:
@@ -198,8 +224,8 @@ class Listener:
             self.decide(end_ts, text)
 
     def decide(self, end_ts: float, text: str):
-        heard_attention = ATTENTION_WORD in text
-        has_command = any(kw in text for kw in STOP_KEYWORDS)
+        heard_attention = bool(ATTENTION_RE.search(text))
+        has_command = bool(STOP_RE.search(text))
         armed = heard_attention or end_ts < self.armed_until
         if self.debug:
             log(f"  [debug] end_ts={end_ts:.1f} armed_until={self.armed_until:.1f} "
@@ -255,8 +281,8 @@ def main():
     args = ap.parse_args()
     _lock = acquire_single_instance_lock()  # noqa: F841 (moet leven tot afsluiten)
 
-    log("voice_stop_listener v2: model laden (base.en)...")
-    model = Model("base.en")
+    log(f"voice_stop_listener v2: model laden ({WHISPER_MODEL})...")
+    model = Model(WHISPER_MODEL)
     listener = Listener(args.debug)
     threading.Thread(target=listener.capture_loop, daemon=True).start()
     log(f'voice_stop_listener v2 gestart -- luistert continu, wacht op "{ATTENTION_WORD}" gevolgd door een commando')

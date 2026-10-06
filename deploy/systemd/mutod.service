@@ -1,0 +1,18 @@
+[Unit]
+Description=mutod - Muto RS hardware daemon (exclusive owner of /dev/myserial)
+Documentation=file:///home/pi/mutod/daemon.py
+After=local-fs.target
+# Blijf opnieuw proberen: bij het booten kan /dev/myserial (USB) er nog niet zijn.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+ExecStart=/usr/bin/python3 -m mutod.daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

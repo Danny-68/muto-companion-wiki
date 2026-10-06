@@ -1,0 +1,19 @@
+[Unit]
+Description=Muto voice stop listener ("muto" + "stop" -> robot.stop via mutod)
+Documentation=file:///home/pi/voice_stop_listener.py
+After=mutod.service sound.target
+Wants=mutod.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=audio
+WorkingDirectory=/home/pi
+ExecStart=/home/pi/whisper_venv/bin/python /home/pi/voice_stop_listener.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ Volledige status/geschiedenis: [docs/muto_companion_overdracht.md](docs/muto_com
 - `navigation/` — `wander_executor.py`, de novelty-grid-wandelroutine die perceptie+gedrag+beweging combineert.
 - `skills/` — YOLO-objectdetectie-pijplijn (Pi-camera -> Jetson Orin Nano -> afstand+buzzer), LLM-gestuurde skill-selectie met gesproken tekst (`yolo_snapshot_sender.py`), en lokale spraakherkenning met attentiewoord (`voice_stop_listener.py`, v2 met Silero VAD).
 - `rl/` — Fase 7: MJCF-modelbouw voor MuJoCo-simulatie, op basis van Yahboom's eigen kinematica-broncode (niet CAD).
+- `deploy/systemd/` — systemd-eenheden voor `mutod` en de spraak-listener (zie de README daarin).
 - `tests/` — offline en live zelftests per laag.
 - `docs/` — de volledige, doorlopend bijgewerkte roadmap/statusbriefing.
 

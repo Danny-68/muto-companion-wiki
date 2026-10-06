@@ -10,7 +10,7 @@ Volledige status/geschiedenis: [docs/muto_companion_overdracht.md](docs/muto_com
 - `drivers/` — bewegingsaansturing: `phoenix_driver.py` (Nav2/cmd_vel, PhoenixGait tripod-engine), `phoenix_gait.py` (gait-wiskunde), `mutod_client.py` (TCP-client + serial-shim voor gebruik binnen de ROS2-container).
 - `perception/` — waarneming: voetcontact, gezichtsdetectie+volgen, LiDAR/dieptecamera-obstakelschatting, front-conventie.
 - `navigation/` — `wander_executor.py`, de novelty-grid-wandelroutine die perceptie+gedrag+beweging combineert.
-- `skills/` — YOLO-objectdetectie-pijplijn (Pi-camera -> Jetson Orin Nano -> afstand+buzzer), LLM-gestuurde skill-selectie met gesproken tekst (`yolo_snapshot_sender.py`), en lokale spraakherkenning met attentiewoord (`voice_stop_listener.py`, werk in uitvoering).
+- `skills/` — YOLO-objectdetectie-pijplijn (Pi-camera -> Jetson Orin Nano -> afstand+buzzer), LLM-gestuurde skill-selectie met gesproken tekst (`yolo_snapshot_sender.py`), en lokale spraakherkenning met attentiewoord (`voice_stop_listener.py`, v2 met Silero VAD).
 - `rl/` — Fase 7: MJCF-modelbouw voor MuJoCo-simulatie, op basis van Yahboom's eigen kinematica-broncode (niet CAD).
 - `tests/` — offline en live zelftests per laag.
 - `docs/` — de volledige, doorlopend bijgewerkte roadmap/statusbriefing.

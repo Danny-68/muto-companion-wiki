@@ -265,9 +265,27 @@ MAX_SESSION_S = 300.0         # harde stop, ongeacht mode -- opgerekt 29 sep 202
 # makkelijker te doorgronden en te loggen dan een kansberekening, zelfde
 # reden als de andere denkmoment-triggers vandaag allemaal deterministisch
 # zijn.
-BOREDOM_GROWTH_PER_TARGET = 0.15  # hoeveel boredom groeit per nieuw-doel-moment, voor novelty-correctie
-BOREDOM_NOVELTY_RELIEF = 0.5      # hoeveel een novelty_score van 1.0 (nooit bezocht) daarvan wegneemt
+# 6 okt 2026 (verfijning na de eerste live sessie): boredom groeide PER NIEUW DOEL (+0.15 / -0.5*novelty), maar in een
+# krappe ruimte dwingt elke veiligheidsstop een nieuw doel af (32 stops in 300 s -> ~elke 2 s een nieuw doel), waardoor de
+# verveling veel te snel opliep (pauze elke ~5 keuzes, novelty 0.04-0.06). Nu groeit hij met TIJD, dus ongeacht
+# hoeveel (door stops afgedwongen) doelen er in die tijd gekozen worden. Kalibratie op de ECHTE novelty-verdeling van
+# die sessie (mediaan 0.12, gemiddeld 0.16, nooit boven 0.50 -- novelty is in de praktijk bijna nooit 0, een eerste
+# aanname met novelty~0 gaf in een replay maar 1 pauze in 300 s i.p.v. 5): met 0.025/s geeft een replay van die
+# sessie 3 gelijkmatig verdeelde pauzes (t=132/228/282 s, gem. ~75 s). Netto groei = GROWTH - RELIEF*novelty: nul bij
+# novelty 0.5, negatief daarboven (nieuw gebied verlicht de verveling). Eventueel bijstellen na live ervaring.
+BOREDOM_GROWTH_PER_S = 0.025      # boredom-groei per seconde bij novelty 0
+BOREDOM_NOVELTY_RELIEF_PER_S = 0.05  # wat een novelty_score van 1.0 (nooit bezocht) per seconde wegneemt
+BOREDOM_MAX_DT_S = 20.0           # maximaal zoveel seconden per update meetellen (na een lange rechte wandeling geen sprong)
 BOREDOM_PAUSE_THRESHOLD = 0.6     # bij dit niveau: pauzeren i.p.v. lopen
+
+
+def update_boredom(boredom: float, dt_s: float, novelty: float) -> float:
+    """Tijd-gebaseerde verveling-update (zuivere functie, los testbaar). dt_s wordt afgekapt op
+    [0, BOREDOM_MAX_DT_S]; uitkomst begrensd op [0, 1]."""
+    dt = max(0.0, min(dt_s, BOREDOM_MAX_DT_S))
+    return max(0.0, min(1.0, boredom + dt * (BOREDOM_GROWTH_PER_S - BOREDOM_NOVELTY_RELIEF_PER_S * novelty)))
+
+
 INVESTIGATE_DURATION_S = 6.0
 INVESTIGATE_REMARKS = [
     "Let me take a look around.",
@@ -711,6 +729,7 @@ def main():
     was_wandering = False
     target_world_heading_deg = None  # vastgehouden doel, i.p.v. elke cyclus opnieuw kiezen (zie fix 12 sep 2026)
     investigate_until = None  # 29 sep 2026: monotone eindtijd van een "stilstaan en kijken"-pauze, None = niet aan het onderzoeken
+    boredom_last_ts = None  # 6 okt 2026: monotone tijd van de laatste boredom-update, None = (her)start zonder dt
     boredom = 0.0  # 29 sep 2026: groeit in bekend gebied, daalt bij iets nieuws (NoveltyGrid.novelty_score) -- zie BOREDOM_* hierboven
     last_center_vy_sign = None  # 29 sep 2026: teken van de vorige centreer-correctie, voor oscillatiedetectie
     center_oscillation_count = 0
@@ -907,7 +926,7 @@ def main():
 
     def cycle():
         nonlocal session_start, watchdog_tripped, was_wandering, target_world_heading_deg
-        nonlocal investigate_until, boredom
+        nonlocal investigate_until, boredom, boredom_last_ts
         nonlocal last_center_vy_sign, center_oscillation_count
         nonlocal progress_check_start
 
@@ -937,6 +956,7 @@ def main():
                 target_world_heading_deg = None
                 investigate_until = None
                 boredom = 0.0
+                boredom_last_ts = None
                 last_center_vy_sign = None
                 center_oscillation_count = 0
                 progress_check_start = None
@@ -973,6 +993,7 @@ def main():
             if time.monotonic() < investigate_until:
                 return
             investigate_until = None
+            boredom_last_ts = None  # de pauze zelf telt niet mee voor de verveling
             node.get_logger().info("onderzoek klaar, verdergaan met verkennen")
 
         if cache.scan is None or cache.odom is None:
@@ -1046,7 +1067,11 @@ def main():
             # (novelty_score, dezelfde NoveltyGrid als choose_heading()
             # al gebruikt).
             novelty = grid.novelty_score(odom_x, odom_y)
-            boredom = max(0.0, min(1.0, boredom + BOREDOM_GROWTH_PER_TARGET - BOREDOM_NOVELTY_RELIEF * novelty))
+            now_m = time.monotonic()
+            dt_s = 0.0 if boredom_last_ts is None else now_m - boredom_last_ts
+            boredom_last_ts = now_m
+            boredom = update_boredom(boredom, dt_s, novelty)
+            node.get_logger().info(f"verveling: dt={min(dt_s, BOREDOM_MAX_DT_S):.1f}s novelty hier={novelty:.2f} -> boredom={boredom:.2f} (drempel {BOREDOM_PAUSE_THRESHOLD:.2f})")
             if boredom >= BOREDOM_PAUSE_THRESHOLD:
                 boredom = 0.0
                 investigate_until = time.monotonic() + INVESTIGATE_DURATION_S

@@ -32,9 +32,24 @@ ROBOT_STATE = "robot.state"        # notificatie (server->client); ook one-shot 
 # geen nieuwe gedragslogica, alleen de al ontworpen hook eindelijk aansluiten.
 ROBOT_NOTIFY_INTERACTION = "robot.notify_interaction"  # geen params -> {"accepted": True}
 
+# 20 sep 2026 (AI-executive-architectuur, stap 1 van het plan, zie
+# muto_ai_executive_architecture_decision_2026-09-20-memory): een Muto-eigen
+# toevoeging, GEEN upstream duck-ipc-proto-methode -- gecheckt bij
+# joeynyc/microduck-mcp's protocol.ts en upstream heeft niets vergelijkbaars
+# (robot.policies gaat daar over RL-policy-slots wisselen, niet over
+# perceptie-aggregatie). mutod draait op de kale host, zonder rclpy/ROS-
+# toegang, dus kan zelf geen YOLO/diepte/positie uitlezen -- externe
+# processen (wander_executor.py, yolo_snapshot_sender.py, straks een relay)
+# PUSHEN hun laatste waarneming hierheen; robot.world_state leest het
+# geheel terug, samen met wat mutod toch al weet (mode/servos/deadman).
+# Bewust generiek (willekeurige key -> willekeurige JSON-blob + tijdstempel)
+# -- geen schema-afdwinging hier, dat is aan de pushers zelf.
+ROBOT_WORLD_UPDATE = "robot.world_update"  # {key, data} -> {"accepted": True}
+ROBOT_WORLD_STATE = "robot.world_state"    # geen params -> {t, mode, world: {key: {data, age_s}}}
+
 SUPPORTED_METHODS = {
     ROBOT_HEALTH, ROBOT_MOVE, ROBOT_STOP, ROBOT_DO, ROBOT_SUBSCRIBE, ROBOT_STATE,
-    ROBOT_NOTIFY_INTERACTION,
+    ROBOT_NOTIFY_INTERACTION, ROBOT_WORLD_UPDATE, ROBOT_WORLD_STATE,
 }
 
 # JSON-RPC 2.0 standaard foutcodes (gebruikt zoals upstream ze gebruikt).

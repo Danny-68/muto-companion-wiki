@@ -53,6 +53,7 @@ import argparse
 import io
 import json
 import math
+import random
 import socket
 import subprocess
 import sys
@@ -235,7 +236,45 @@ FORWARD_SAFETY_MIN_M = 0.45   # extra check vlak voor het FORWARD-commando zelf
 FORWARD_CORRIDOR_HALF_DEG = 20.0
 TURN_VYAW = 0.09              # zelfde ordegrootte als de bevestigde Fase 3 TURN-test
 FORWARD_VX = 0.03             # bewust klein, eerste live wander-test
-MAX_SESSION_S = 60.0          # harde stop, ongeacht mode -- eerste test, conservatief
+MAX_SESSION_S = 300.0         # harde stop, ongeacht mode -- opgerekt 29 sep 2026 van de eerste-test-waarde
+                               # (60s) na meerdere probleemloze live sessies deze week (strafe-veiligheidsfix,
+                               # centreer-oscillatie-fix, allebei bevestigd); stapsgewijs verder oprekken
+                               # nadat dit een tijdje goed gaat, niet in één keer naar "onbeperkt"
+# 29 sep 2026 (gebruikersidee, "hij hoeft niet de hele tijd te lopen -- mag
+# ook op de plaats onderzoek doen, zoals een levend wezen zou doen: kijken,
+# nieuwsgierig zijn, een opmerking maken"): eerste, kleine stap richting
+# dat idee -- puur binnen wander_executor.py zelf (nog GEEN LLM-beweeg-
+# autoriteit, dat blijft een aparte, later aangekondigde stap, zie
+# muto_skill_execution_greet_2026-09-20-memory). Elke keer dat de robot een
+# nieuw doel zou kiezen, pauzeert hij i.p.v. meteen te lopen -- staat stil,
+# zegt iets, en negeert bewegingscommando's tot de pauze voorbij is. Geen
+# kop/camera-beweging hier (dat is een aparte, grotere uitbreiding), puur
+# stilstaan + geluid, zoals gevraagd.
+#
+# 29 sep 2026 (vervolg, gebruikersidee uit het "interessant gedrag voor
+# free-roaming"-voorstel): een VASTE teller ("elke 3e doel") voelt
+# mechanisch, niet nieuwsgierig. Vervangen door een boredom-scalar die
+# meebeweegt met wat de robot al kent -- hergebruikt NoveltyGrid.
+# novelty_score() (behavior.py, al bestaand sinds Fase 5, ook al gebruikt
+# in choose_heading()) i.p.v. een nieuw geheugensysteem te bouwen. Bij elk
+# nieuw-doel-moment: boredom groeit een beetje, maar hoe nieuwer de
+# huidige plek (novelty_score dicht bij 1.0 = nooit eerder bezocht), hoe
+# meer die groei tegengewerkt/omgekeerd wordt -- veel rondlopen in bekend
+# gebied verveelt, iets nieuws ontdekken verlicht de verveling. Bewust
+# drempel-gebaseerd (niet kans-gebaseerd/random) als eerste versie --
+# makkelijker te doorgronden en te loggen dan een kansberekening, zelfde
+# reden als de andere denkmoment-triggers vandaag allemaal deterministisch
+# zijn.
+BOREDOM_GROWTH_PER_TARGET = 0.15  # hoeveel boredom groeit per nieuw-doel-moment, voor novelty-correctie
+BOREDOM_NOVELTY_RELIEF = 0.5      # hoeveel een novelty_score van 1.0 (nooit bezocht) daarvan wegneemt
+BOREDOM_PAUSE_THRESHOLD = 0.6     # bij dit niveau: pauzeren i.p.v. lopen
+INVESTIGATE_DURATION_S = 6.0
+INVESTIGATE_REMARKS = [
+    "Let me take a look around.",
+    "Hold on, I want to see what's here.",
+    "Interesting, let me check this out.",
+    "Give me a moment to look at this.",
+]
 # 13 sep 2026 (gebruikersidee): een doel dat ongeveer OPZIJ ligt hoeft niet
 # via draaien+lopen bereikt te worden -- SHIFT_LEFT/RIGHT (vy) is al fysiek
 # bevestigd (Fase 3/6) en laat de robot recht zijwaarts stappen zonder te
@@ -244,6 +283,17 @@ MAX_SESSION_S = 60.0          # harde stop, ongeacht mode -- eerste test, conser
 STRAFE_MIN_DEG = 70.0
 STRAFE_VY = 0.03               # zelfde ordegrootte als FORWARD_VX/de bevestigde SHIFT-test
 STRAFE_SAFETY_MIN_M = 0.45     # zelfde drempel als FORWARD_SAFETY_MIN_M, nu voor de zijwaartse richting
+# 29 sep 2026 (echte botsing live gevonden -- robot liep tegen een tafelpoot
+# tijdens een lange SHIFT_RIGHT-reeks): de strafe-veiligheidscheck keek tot
+# nu toe naar precies EEN clearance-bucket (de dichtstbijzijnde bij het
+# doel, 15 graden uit elkaar) i.p.v. een hele range zoals de al-bewezen
+# FORWARD_CORRIDOR_HALF_DEG-aanpak hierboven. Een dunne poot past makkelijk
+# tussen twee gemeten hoeken in en werd zo nooit gezien, ook al bleef de
+# robot letterlijk op dezelfde plek hangen (log toonde ~10s lang bijna
+# identieke "resterende hoek" tijdens het strafen -- geen echte
+# voortgang). Zelfde robotbreedte-redenering als vooruit, nu geprojecteerd
+# op de zijwaartse richting i.p.v. recht vooruit.
+STRAFE_CORRIDOR_HALF_DEG = FORWARD_CORRIDOR_HALF_DEG
 
 # 13 sep 2026 (gebruikersidee): in een smalle doorgang (bv. een deuropening)
 # is de kans op een succesvolle doorgang het grootst als de robot ongeveer
@@ -255,6 +305,42 @@ CENTERING_NARROW_M = 1.2        # onder deze corridor_clear actief proberen te c
 CENTERING_SIDE_DEG = 30.0       # bucket net buiten de vooruit-corridor, representatief voor ruimte opzij
 CENTERING_MIN_IMBALANCE_M = 0.15  # kleiner verschil dan dit is ruis, dan niet corrigeren
 CENTERING_VY = 0.02             # kleiner dan STRAFE_VY -- dit is fijnbijsturen, geen bewuste zijstap
+# 29 sep 2026 (gebruiker zag het live gebeuren): in een aanhoudend smalle
+# doorgang kan de links/rechts-onbalans per cyclus van teken wisselen (de
+# eigen correctiebeweging verstoort wat de volgende meting ziet) -- de
+# robot centreert dan eindeloos heen en weer zonder ooit vooruit te komen
+# of een nieuw doel te overwegen. Idee van de gebruiker: bij zo'n herhaald
+# patroon een bewust "denkmoment" inlassen i.p.v. mechanisch door te
+# blijven corrigeren -- stilstaan, iets zeggen, en het gehouden doel
+# loslaten zodat de normale besluitvorming (mogelijk incl. draaien) een
+# vers doel kiest. Hergebruikt de al-bestaande investigate-pauze-
+# infrastructuur (zie INVESTIGATE_* hierboven) i.p.v. een eigen los systeem.
+CENTERING_OSCILLATION_LIMIT = 4  # zoveel keer op rij van teken gewisseld voordat het als vastzitten telt
+CENTERING_STUCK_REMARKS = [
+    "Let me think about this for a moment.",
+    "Hmm, this isn't working. Let me reconsider.",
+    "I should look at this differently.",
+]
+# 29 sep 2026 (gebruikersidee: "kan je met bv. de IMU zien of er een
+# bewegingscommando is maar geen beweging, bv. door een obstakel?"):
+# odometrie is hiervoor een directer signaal dan de IMU -- de IMU meet
+# orientatie/versnelling, geen positie, dus kan "commando gestuurd maar
+# geen voortgang" niet rechtstreeks vaststellen. Odometrie (/odom, via
+# rf2o, al elke cyclus in cache.odom beschikbaar) vergelijkt WERKELIJKE
+# verplaatsing met wat verwacht zou worden bij een actief FORWARD-
+# commando. Zelfde denkmoment-machinery als de centreer-oscillatie
+# hierboven, nu op het meest directe signaal getriggerd i.p.v. een
+# gedragspatroon-proxy. Bewust eerst alleen de FORWARD-tak (het
+# vastgehouden-doel-geval) -- niet TURN (draaien beweegt de positie
+# terecht niet) en niet STRAFE (heeft al zijn eigen fix van vandaag,
+# zie STRAFE_CORRIDOR_HALF_DEG), als kleine eerste stap.
+PROGRESS_CHECK_WINDOW_S = 6.0     # zoveel seconden actief FORWARD-commanderen voor de check meetelt
+PROGRESS_MIN_DISPLACEMENT_M = 0.05  # minder dan dit in het venster = geen echte voortgang
+PROGRESS_STUCK_REMARKS = [
+    "I don't seem to be making any progress. Let me think about this.",
+    "Something is blocking me. Let me reconsider my path.",
+    "I'm not moving forward. Time to look at this differently.",
+]
 
 # -- witte-V-detectie (samengevoegd vanuit white_v_detector.py, 13 sep 2026) --
 # Gekalibreerd op een echte foto van de roze bal (13 sep 2026), niet gegokt --
@@ -318,7 +404,13 @@ FOUND_AREA_PX = 15000
 PIPER_BIN = "/root/piper_venv/bin/piper"
 PIPER_MODEL = "/root/piper_voices/en_US-amy-medium.onnx"
 PIPER_SAMPLE_RATE = 22050
-TTS_ALSA_DEVICE = "plughw:2,0"  # kaartnummer kan per boot wisselen, zie muto_audio_module_fix_2026-09-13-memory
+# 29 sep 2026 (gebruikersidee): het KAARTNUMMER wisselt aantoonbaar per boot
+# (2 -> 3 -> weer 2, alle drie live waargenomen in dezelfde week), maar de
+# ALSA-kaart-ID blijft altijd "Device" (zie `aplay -l`: "card N: Device
+# [USB Audio Device]", N wisselt, "Device" niet). Adresseren op NAAM i.p.v.
+# nummer is dus stabiel over reboots heen, live bevestigd -- geen losse
+# per-sessie check meer nodig.
+TTS_ALSA_DEVICE = "plughw:CARD=Device,DEV=0"
 
 
 def rpc_call(sock, rfile, method, params=None, req_id=1):
@@ -618,6 +710,11 @@ def main():
     watchdog_tripped = False
     was_wandering = False
     target_world_heading_deg = None  # vastgehouden doel, i.p.v. elke cyclus opnieuw kiezen (zie fix 12 sep 2026)
+    investigate_until = None  # 29 sep 2026: monotone eindtijd van een "stilstaan en kijken"-pauze, None = niet aan het onderzoeken
+    boredom = 0.0  # 29 sep 2026: groeit in bekend gebied, daalt bij iets nieuws (NoveltyGrid.novelty_score) -- zie BOREDOM_* hierboven
+    last_center_vy_sign = None  # 29 sep 2026: teken van de vorige centreer-correctie, voor oscillatiedetectie
+    center_oscillation_count = 0
+    progress_check_start = None  # 29 sep 2026: (tijdstip, (x, y)) bij begin van het huidige voortgangsvenster, None = niet actief aan het bijhouden
     v_state = {
         "consecutive_centered": 0, "last_trigger_ts": 0.0, "last_turn_ts": 0.0,
         "last_seen_ts": 0.0, "found": False,
@@ -810,6 +907,9 @@ def main():
 
     def cycle():
         nonlocal session_start, watchdog_tripped, was_wandering, target_world_heading_deg
+        nonlocal investigate_until, boredom
+        nonlocal last_center_vy_sign, center_oscillation_count
+        nonlocal progress_check_start
 
         # 17 sep 2026 (bugfix): de sessiewatchdog telde niet mee zolang
         # check_white_v() (bal-tracking) de cyclus onderschepte -- de tijd-check
@@ -835,6 +935,11 @@ def main():
                 session_start = None
                 watchdog_tripped = False
                 target_world_heading_deg = None
+                investigate_until = None
+                boredom = 0.0
+                last_center_vy_sign = None
+                center_oscillation_count = 0
+                progress_check_start = None
             elif session_start is None:
                 session_start = time.monotonic()
                 node.get_logger().info("wander-sessie gestart")
@@ -860,6 +965,15 @@ def main():
             return  # getript: blijft genegeerd tot het script herstart wordt (bewuste, harde grens)
 
         was_wandering = True
+
+        # 29 sep 2026: zit midden in een "stilstaan en kijken"-pauze --
+        # gewoon niets doen (geen bewegingscommando, ook geen nieuw doel
+        # kiezen) tot de pauze om is. Geen sensordata nodig hiervoor.
+        if investigate_until is not None:
+            if time.monotonic() < investigate_until:
+                return
+            investigate_until = None
+            node.get_logger().info("onderzoek klaar, verdergaan met verkennen")
 
         if cache.scan is None or cache.odom is None:
             node.get_logger().warn("nog geen scan/odom ontvangen, wacht...")
@@ -924,6 +1038,26 @@ def main():
                 node.get_logger().info(f"vastgehouden doel niet meer vrij ({current_target_clear}), nieuw doel kiezen")
 
         if need_new_target:
+            # 29 sep 2026: vlak voordat een NIEUW doel gekozen zou worden --
+            # het natuurlijke "wat nu"-moment -- af en toe eerst pauzeren
+            # i.p.v. meteen weer lopen. Boredom-scalar i.p.v. een vaste
+            # teller, zie BOREDOM_* hierboven: groeit in bekend gebied,
+            # wordt tegengewerkt door hoe nieuw de HUIDIGE plek is
+            # (novelty_score, dezelfde NoveltyGrid als choose_heading()
+            # al gebruikt).
+            novelty = grid.novelty_score(odom_x, odom_y)
+            boredom = max(0.0, min(1.0, boredom + BOREDOM_GROWTH_PER_TARGET - BOREDOM_NOVELTY_RELIEF * novelty))
+            if boredom >= BOREDOM_PAUSE_THRESHOLD:
+                boredom = 0.0
+                investigate_until = time.monotonic() + INVESTIGATE_DURATION_S
+                remark = random.choice(INVESTIGATE_REMARKS)
+                node.get_logger().info(
+                    f"verveling bereikt (novelty hier={novelty:.2f}) -- onderzoek op de plaats "
+                    f"({INVESTIGATE_DURATION_S:.0f}s stilstaan): \"{remark}\""
+                )
+                speak(remark, node.get_logger())
+                target_world_heading_deg = None
+                return
             chosen = choose_heading(CANDIDATE_HEADINGS_DEG, merged, odom_x, odom_y, odom_yaw_deg,
                                       grid, step_m=STEP_M, min_clear_m=MIN_CLEAR_M)
             if chosen is None:
@@ -931,6 +1065,7 @@ def main():
                 target_world_heading_deg = None
                 return
             target_world_heading_deg = normalize_deg(odom_yaw_deg + chosen)
+            progress_check_start = None  # vers doel -- oude voortgangsbaseline is niet meer relevant
             node.get_logger().info(f"nieuw doel gekozen: {chosen:+.0f} graden relatief (wereld {target_world_heading_deg:+.0f})")
 
         offset_to_target = normalize_deg(target_world_heading_deg - odom_yaw_deg)
@@ -980,11 +1115,56 @@ def main():
                     target_side_clear = max(left_clear, right_clear)
                     if abs(imbalance) > CENTERING_MIN_IMBALANCE_M and target_side_clear >= STRAFE_SAFETY_MIN_M:
                         vy = math.copysign(CENTERING_VY, imbalance)
+                        vy_sign = 1 if vy > 0 else -1
+                        if last_center_vy_sign is not None and vy_sign != last_center_vy_sign:
+                            center_oscillation_count += 1
+                        else:
+                            center_oscillation_count = 1
+                        last_center_vy_sign = vy_sign
+                        if center_oscillation_count >= CENTERING_OSCILLATION_LIMIT:
+                            center_oscillation_count = 0
+                            last_center_vy_sign = None
+                            target_world_heading_deg = None  # loslaten -- volgende cyclus kiest vers (mogelijk incl. draaien)
+                            investigate_until = time.monotonic() + INVESTIGATE_DURATION_S
+                            remark = random.choice(CENTERING_STUCK_REMARKS)
+                            node.get_logger().info(
+                                f"blijft heen-en-weer centreren (corridor={corridor_clear:.2f}m, "
+                                f"{CENTERING_OSCILLATION_LIMIT}x van teken gewisseld) -- denkmoment, doel loslaten: \"{remark}\""
+                            )
+                            speak(remark, node.get_logger())
+                            return
                         send_move(vy=vy, why=(
                             f"smalle doorgang (corridor={corridor_clear:.2f}m), centreren "
                             f"(links={left_clear:.2f} rechts={right_clear:.2f})"
                         ))
                         return
+            center_oscillation_count = 0  # écht vooruit gekomen -- oude oscillatiestand telt niet meer mee
+            last_center_vy_sign = None
+
+            # 29 sep 2026: voortgangscheck op basis van echte odometrie --
+            # zie PROGRESS_CHECK_WINDOW_S hierboven. Alleen relevant hier
+            # (de FORWARD-tak) -- TURN beweegt de positie terecht niet, en
+            # STRAFE heeft al zijn eigen fix van vandaag.
+            if progress_check_start is None:
+                progress_check_start = (time.monotonic(), (odom_x, odom_y))
+            else:
+                start_ts, (start_x, start_y) = progress_check_start
+                elapsed = time.monotonic() - start_ts
+                if elapsed >= PROGRESS_CHECK_WINDOW_S:
+                    displacement = math.hypot(odom_x - start_x, odom_y - start_y)
+                    if displacement < PROGRESS_MIN_DISPLACEMENT_M:
+                        progress_check_start = None
+                        target_world_heading_deg = None  # loslaten -- volgende cyclus kiest vers
+                        investigate_until = time.monotonic() + INVESTIGATE_DURATION_S
+                        remark = random.choice(PROGRESS_STUCK_REMARKS)
+                        node.get_logger().info(
+                            f"geen echte voortgang ondanks FORWARD-commando's ({elapsed:.1f}s, "
+                            f"verplaatsing={displacement:.3f}m) -- denkmoment, doel loslaten: \"{remark}\""
+                        )
+                        speak(remark, node.get_logger())
+                        return
+                    progress_check_start = (time.monotonic(), (odom_x, odom_y))  # echte voortgang -- venster rolt door
+
             send_move(vx=FORWARD_VX, why=f"doel {offset_to_target:+.0f} graden ~voorwaarts, lopen")
         elif abs(offset_to_target) >= STRAFE_MIN_DEG:
             # 13 sep 2026: doel ligt ongeveer opzij -- direct zijwaarts
@@ -993,10 +1173,17 @@ def main():
             # veiligheidscheck op de clearance-bucket het dichtst bij de
             # richting van het doel zelf (niet de brede vooruit-corridor,
             # want de robot beweegt hier opzij, niet naar voren).
-            nearest_bucket = min(merged.keys(), key=lambda h: abs(h - offset_to_target)) if merged else None
-            strafe_clear = merged.get(nearest_bucket) if nearest_bucket is not None else None
+            # 29 sep 2026: was hier een ENKELE bucket (nearest_bucket) --
+            # zie STRAFE_CORRIDOR_HALF_DEG hierboven voor de echte botsing
+            # die dit blootlegde. Nu net als corridor_clear: het MINIMUM
+            # over alle buckets binnen +-STRAFE_CORRIDOR_HALF_DEG van de
+            # doelrichting, conservatief (kleinste wint).
+            strafe_clear = min(
+                (v for h, v in merged.items() if abs(normalize_deg(h - offset_to_target)) <= STRAFE_CORRIDOR_HALF_DEG),
+                default=None,
+            )
             if strafe_clear is None or strafe_clear < STRAFE_SAFETY_MIN_M:
-                handle_obstacle_stop(f"veiligheidscheck faalt (clearance richting zijwaarts doel={strafe_clear}), niet strafen")
+                handle_obstacle_stop(f"veiligheidscheck faalt (laagste clearance richting zijwaarts doel={strafe_clear}), niet strafen")
                 target_world_heading_deg = None
                 return
             vy = math.copysign(STRAFE_VY, offset_to_target)

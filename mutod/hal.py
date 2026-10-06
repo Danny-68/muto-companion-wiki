@@ -54,14 +54,30 @@ class MutoHAL:
     # -- laag-niveau ----------------------------------------------------
 
     def _write_frame(self, addr: int, data: list):
+        # 29 sep 2026 (echt incident: een korte USB-heraansluiting van de
+        # STM32-adapter tijdens het lopen liet een rauwe SerialException
+        # hier ongevangen door tot in de control-loop-thread, wat het HELE
+        # mutod-proces liet afsluiten -- zie run()'s "stop zodra de
+        # control-thread sterft"-patroon. Alle lagen daarboven (control-
+        # loop, deadman, IPC-handlers) vangen MutoHALError al netjes af;
+        # dit was het enige punt waar een echte seriele I/O-fout dat type
+        # niet kreeg. OSError erbij (niet alleen SerialException) omdat een
+        # weggetrokken USB-device soms als kaal OSError/Errno 5 naar boven
+        # komt, niet altijd als pyserial's eigen exception-klasse.
         with self._lock:
-            self._ser.write(protocol.build_write_frame(addr, data))
+            try:
+                self._ser.write(protocol.build_write_frame(addr, data))
+            except (serial.SerialException, OSError) as exc:
+                raise MutoHALError(f"schrijven naar STM32 mislukt: {exc}") from exc
 
     def _read_frame(self, addr: int, count: int):
         with self._lock:
-            self._ser.reset_input_buffer()
-            self._ser.write(protocol.build_read_frame(addr, count))
-            raw = self._ser.read(protocol.response_size(count))
+            try:
+                self._ser.reset_input_buffer()
+                self._ser.write(protocol.build_read_frame(addr, count))
+                raw = self._ser.read(protocol.response_size(count))
+            except (serial.SerialException, OSError) as exc:
+                raise MutoHALError(f"lezen van STM32 mislukt: {exc}") from exc
         return protocol.parse_response(raw, addr, count)
 
     # -- servo's ----------------------------------------------------------

@@ -337,3 +337,25 @@ Geïmplementeerd: `robot.health`, `robot.state`, `robot.move`, `robot.stop`, `ro
 **Audio/TTS: volledig opgelost en uitgebreid.** De USB-speaker bleek nooit kapotte hardware — een udev-regel (`99-yahboom-audio.rules`) blokkeerde de ALSA-driver, verwijderd en bevestigd na reboot. TTS vervolgens toegevoegd aan `yolo_snapshot_sender.py` (`--speak`-flag): eerst espeak-ng geprobeerd (Nederlands en Engels, ook met lagere spreeksnelheid) — user-oordeel steeds "slecht"/"matig" verstaanbaar. Vervangen door **Piper** (lokale neurale TTS, `en_US-amy-medium`-stem, via een pip-venv omdat dit OS `pip install` systeembreed blokkeert) — user-bevestigd "veel beter!!". espeak-ng volledig verwijderd. Geinspireerd door onderzoek naar Reachy's (Pollen Robotics) eigen TTS-aanpak (cloud-gebaseerd, Deepgram/Grok Voice) — Piper is het lokale/offline equivalent zonder cloud-afhankelijkheid.
 
 **Mijlpaal, zelfde dag:** eerste succesvolle autonome deur-doorgang met `wander_executor.py` (corridor-veiligheid, watchdog-fix, doel-volg-prioriteit, corridor-centreren, kleurgebaseerde detectie i.p.v. helderheid-gebaseerd — zie de code-comments in `wander_executor.py`/`behavior.py` voor details per fix).
+
+---
+
+## 7. Update 17-29 sep 2026
+
+**AI-executive (stapsgewijs, bovenop `mutod`, geen rewrite):** `robot.world_state` / `robot.world_update` IPC, YOLO-push vanaf de Jetson, qwen3-vl-scenebeschrijving via Ollama (192.168.68.77), en een `GoalSelector` (`skills/yolo_snapshot_sender.py`) die een whitelisted skill kiest (`observe` / `greet`). De LLM schrijft bij `greet` zelf de gesproken regel (`text`/`emotion`/`speed`/`pause_before`); `emotion` wordt gelogd maar niet in audio omgezet (Piper heeft geen emotiebesturing). Live bevestigd.
+
+**Gemeten:** YOLO-doorvoer ~10,8 Hz op de Jetson (CPU) -- de oorspronkelijke 15-30 Hz-doelstelling is op deze hardware niet haalbaar. De 35kg-bus-servo's kunnen geen load/stroom/temperatuur teruggeven (alleen positie); positiefout is de enige indirecte proxy.
+
+**Veiligheidsfixes in `wander_executor.py`:**
+- Strafe-blinde vlek (echte aanrijding tegen een tafelpoot): de zijwaartse check bemonsterde 1 clearance-bucket i.p.v. een bereik; nu hetzelfde range-min-patroon als de voorwaartse check.
+- `mutod/hal.py`: ruwe `SerialException`/`OSError` bij een USB-glitch crashte het hele proces; `_read_frame`/`_write_frame` verpakken die nu als `MutoHALError`, dat de daemon overal al netjes afvangt.
+
+**"Free roaming" i.p.v. constant lopen:** periodieke onderzoekspauzes met gesproken opmerking, een denkpauze bij herhaalde centreer-oscillatie, een odometrie-gebaseerde "vast"-detector (voorwaartse tak), en een verveling-scalar (`BOREDOM_*`) die het vaste teller-patroon verving. Logisch geverifieerd met een simulatie; de verveling-scalar is nog NIET live getest. Sessielimiet 60 -> 300 s.
+
+**Audio:** ALSA-kaart altijd op NAAM adresseren (`plughw:CARD=Device,DEV=0`), nooit op nummer -- het kaartnummer verschuift tussen boots.
+
+**Infrastructuur:** USB-topologie in kaart gebracht (de STM32 deelt een hub-zware Pi-poort met het audioapparaat; er is geen vrije poort -- de Pi 5 toont dezelfde fysieke poortparen als twee Linux-"Bus"-nummers). SD-kaart gekloond naar 128 GB (rpi-clone), volledig geverifieerd inclusief de echte robotverbinding.
+
+**Spraak (`skills/voice_stop_listener.py`):** lokale spraakherkenning (pywhispercpp `base.en`, geen Jetson) op de bestaande USB-microfoon, met attentiewoord "muto" -> gesproken "Yes." -> commando "stop" -> `robot.stop` via mutod. Bewust GEEN vervanging voor de fysieke e-stop. Cyclus ~7-8 s. **Open bug:** "stop" triggert soms niet ondanks een actief venster (`ARM_WINDOW_S` = 20 s); verdachten zijn zelf-echo van de eigen "Yes." en ALSA-contentie tussen `aplay` en `arecord` op hetzelfde apparaat. Debug-logging staat er nog in.
+
+**Nog niet gedaan:** live-test verveling-scalar, voice-bug reproduceren, lichaamshoogte/loopsnelheid-variatie ("mimiek"), Kokoro-vs-Piper-vergelijking.

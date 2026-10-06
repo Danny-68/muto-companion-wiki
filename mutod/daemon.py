@@ -141,6 +141,7 @@ class SharedState:
         self.last_error = None
         self.last_move = {"vx": 0.0, "vy": 0.0, "vyaw": 0.0}
         self.last_move_ts = 0.0
+        self.world = {}  # 20 sep 2026: key -> {"data": ..., "ts": ...}, zie robot.world_update/world_state
 
     def set_angles(self, angles):
         with self._lock:
@@ -165,6 +166,18 @@ class SharedState:
         with self._lock:
             return dict(self.last_move), self.last_move_ts
 
+    def update_world(self, key, data):
+        with self._lock:
+            self.world[key] = {"data": data, "ts": time.monotonic()}
+
+    def world_snapshot(self):
+        with self._lock:
+            now = time.monotonic()
+            return {
+                key: {"data": entry["data"], "age_s": round(now - entry["ts"], 2)}
+                for key, entry in self.world.items()
+            }
+
 
 class Daemon:
     def __init__(self, port: str, listen_host: str, listen_port: int):
@@ -177,6 +190,16 @@ class Daemon:
         self._stop = threading.Event()
         self.hal = None
         self.movement_active_until = 0.0
+        # 17 sep 2026: structurele fix voor een echte race tussen handmatig
+        # torque-uit-zetten (bv. voor het met de hand poseren van een poot,
+        # zie muto_manual_pose_calibration_2026-09-17-memory) en de deadman's
+        # stay_put() -- die laatste botste ooit met een torque-aan-commando
+        # voor dezelfde servo, met een servo die daarna niet meer reageerde
+        # als gevolg. "torque" raakt de deadman bewust NIET aan (dat zou het
+        # probleem alleen vertragen, niet oplossen), in plaats daarvan slaat
+        # de deadman stay_put() helemaal over zolang hier servo's in staan --
+        # de twee systemen mogen nooit tegelijk dezelfde servo aansturen.
+        self.torqued_off_servos = set()
         # Fase 5: alleen voor mode-RAPPORTAGE via robot.state -- ticken hier
         # roept nooit hal.gait() of iets bewegends aan, zie behavior.py's
         # module-docstring. peers_present staat hardcoded op False tot Fase 4's
@@ -246,9 +269,19 @@ class Daemon:
                     attitude = self.hal.read_attitude()
                 return {"ok": True, **attitude}
             elif op == "torque":
+                on = bool(cmd.get("on", True))
+                servo_id = cmd.get("servo_id", 0)
                 with self.cmd_lock:
-                    self.hal.torque(bool(cmd.get("on", True)), cmd.get("servo_id", 0))
-                return {"ok": True}
+                    self.hal.torque(on, servo_id)
+                if servo_id == 0:
+                    ids = range(1, protocol.NUM_SERVOS + 1)
+                else:
+                    ids = [servo_id]
+                if on:
+                    self.torqued_off_servos.difference_update(ids)
+                else:
+                    self.torqued_off_servos.update(ids)
+                return {"ok": True, "torqued_off_servos": sorted(self.torqued_off_servos)}
             elif op == "reset_posture":
                 self.deadman.touch()
                 with self.cmd_lock:
@@ -264,6 +297,17 @@ class Daemon:
                 with self.cmd_lock:
                     self.hal.action(cmd["action_id"])
                 return {"ok": True, "action_id": cmd["action_id"], "name": protocol.ACTION_NAMES.get(cmd["action_id"])}
+            elif op == "move_leg":
+                # 17 sep 2026: gericht 1-poot-aantikken (zie muto_targeted_leg_tap-
+                # memory) -- hergebruikt hal.write_leg() (bestond al, nooit eerder
+                # via IPC ontsloten), zelfde veilige 3x-MOTOR-pad als overal elders.
+                # Bewust GEEN deadman/movement-active hier: dit is bedoeld voor
+                # gebruik terwijl de robot al stilstaat (na search+found), niet
+                # als vervanging van de normale gait-aansturing.
+                self.deadman.touch()
+                with self.cmd_lock:
+                    self.hal.write_leg(cmd["leg"], cmd["angles"], cmd.get("runtime_ms", 200))
+                return {"ok": True, "leg": cmd["leg"], "angles": cmd["angles"]}
             elif op == "stop":
                 with self.cmd_lock:
                     self.hal.stay_put()
@@ -292,6 +336,22 @@ class Daemon:
             "move": {"requested": [move["vx"], move["vy"], move["vyaw"]]},
             "safety": {"deadman_active": self.deadman.expired()},
             "loop": {"hz": CONTROL_HZ, "age_s": age_s, "missed": 1 if err else 0},
+        }
+
+    def _build_world_state(self) -> dict:
+        """20 sep 2026 (AI-executive-architectuur, stap 1): bundelt wat mutod
+        zelf al weet (mode) met wat externe processen hierheen gepusht hebben
+        via robot.world_update (YOLO/diepte/positie/etc, elk met eigen
+        leeftijd) -- puur waarneembaar maken, geen nieuwe besluitvorming."""
+        battery = self._read_battery_cache()
+        mode = self.behavior.tick(
+            battery_pct=battery["percent"] if battery else None,
+            peers_present=False,  # zie __init__: Fase 4-koppeling nog niet gedaan
+        )
+        return {
+            "t": time.time(),
+            "mode": mode,
+            "world": self.state.world_snapshot(),
         }
 
     def _build_robot_health(self) -> dict:
@@ -392,6 +452,18 @@ class Daemon:
                 self.behavior.notify_interaction()
                 return ipc_types.make_result(req_id, {"accepted": True})
 
+            elif method == ipc_types.ROBOT_WORLD_UPDATE:
+                key = params.get("key")
+                if not isinstance(key, str) or not key:
+                    return ipc_types.make_error(req_id, ipc_types.INVALID_PARAMS, "key (niet-lege string) is verplicht")
+                if "data" not in params:
+                    return ipc_types.make_error(req_id, ipc_types.INVALID_PARAMS, "data is verplicht")
+                self.state.update_world(key, params["data"])
+                return ipc_types.make_result(req_id, {"accepted": True})
+
+            elif method == ipc_types.ROBOT_WORLD_STATE:
+                return ipc_types.make_result(req_id, self._build_world_state())
+
             elif method == ipc_types.ROBOT_SUBSCRIBE:
                 # LET OP: start hier bewust GEEN achtergrondthread -- de
                 # aanroeper (Handler.handle()) start die pas na het schrijven
@@ -424,12 +496,19 @@ class Daemon:
                     log.warning("read_all_angles mislukt: %s", exc)
 
             if self.deadman.trip_once():
-                log.warning("deadman: geen intent binnen %.1fs, stay_put()", DEADMAN_TIMEOUT_S)
-                try:
-                    with self.cmd_lock:
-                        self.hal.stay_put()
-                except MutoHALError as exc:
-                    log.error("deadman stay_put() mislukt: %s", exc)
+                if self.torqued_off_servos:
+                    log.warning(
+                        "deadman: geen intent binnen %.1fs, MAAR servo's %s staan bewust op torque-uit "
+                        "(handmatig poseren) -- stay_put() overgeslagen om geen race te veroorzaken",
+                        DEADMAN_TIMEOUT_S, sorted(self.torqued_off_servos),
+                    )
+                else:
+                    log.warning("deadman: geen intent binnen %.1fs, stay_put()", DEADMAN_TIMEOUT_S)
+                    try:
+                        with self.cmd_lock:
+                            self.hal.stay_put()
+                    except MutoHALError as exc:
+                        log.error("deadman stay_put() mislukt: %s", exc)
 
             elapsed = time.monotonic() - tick_start
             time.sleep(max(0.0, TICK_S - elapsed))
